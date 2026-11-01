@@ -316,6 +316,29 @@ hypervgfx_attach(device_t dev)
 	hypervgfx_softc = sc;
 	hypervgfx_dirt_start(sc);
 
+	/*
+	 * The X server learns the geometry from the framebuffer at
+	 * startup, so apply the desired mode right away if one was given
+	 * as a tunable (hw.hypervgfx.mode in loader.conf, e.g. "1920x1080").
+	 */
+	{
+		char modestr[16] = "";
+		uint32_t w, h;
+		int n;
+
+		TUNABLE_STR_FETCH("hw.hypervgfx.mode", modestr,
+		    sizeof(modestr));
+		n = 0;
+		if (modestr[0] != '\0' &&
+		    sscanf(modestr, "%ux%u%n", &w, &h, &n) == 2 &&
+		    n > 0 && modestr[n] == '\0') {
+			error = hypervgfx_set_mode(sc, w, h);
+			if (error != 0)
+				device_printf(dev, "unable to set tunable "
+				    "mode %s: %d\n", modestr, error);
+		}
+	}
+
 	device_printf(dev, "attached: framebuffer %ux%u at 0x%016jx\n",
 	    sc->fb_width, sc->fb_height, (uintmax_t)sc->fb_pbase);
 
@@ -368,18 +391,46 @@ hypervgfx_status_sysctl(SYSCTL_HANDLER_ARGS)
 	    "screen depth: %u\n"
 	    "max resolution: %ux%u\n"
 	    "preferred resolution: %ux%u\n"
-	    "framebuffer: %ux%u, stride %u, %zu bytes at 0x%016jx\n"
-	    "dirt needed: %s\n",
+	    "current mode: %ux%u, stride %u\n"
+	    "framebuffer: %zu bytes at 0x%016jx\n"
+	    "dirt needed: %s\n"
+	    "refresh rate: %u Hz\n",
 	    HYPERVGFX_VERSION_MAJOR(sc->synthvid_version),
 	    HYPERVGFX_VERSION_MINOR(sc->synthvid_version),
 	    sc->screen_depth,
 	    sc->screen_width_max, sc->screen_height_max,
 	    sc->preferred_width, sc->preferred_height,
-	    sc->fb_width, sc->fb_height, sc->fb_stride, sc->fb_size,
+	    sc->fb_width, sc->fb_height, sc->fb_stride,
+	    sc->fb_size,
 	    (uintmax_t)sc->fb_pbase,
-	    sc->dirt_needed ? "yes" : "no");
+	    sc->dirt_needed ? "yes" : "no",
+	    sc->refresh_hz);
 
 	return (sysctl_handle_string(oidp, buf, sizeof(buf), req));
+}
+
+static int
+hypervgfx_set_mode_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct hypervgfx_softc *sc = hypervgfx_softc;
+	char buf[32];
+	uint32_t w, h;
+	int error, n;
+
+	if (sc == NULL)
+		return (ENODEV);
+
+	snprintf(buf, sizeof(buf), "%ux%u", sc->fb_width, sc->fb_height);
+	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	n = 0;
+	if (sscanf(buf, "%ux%u%n", &w, &h, &n) != 2 || n == 0 ||
+	    buf[n] != '\0')
+		return (EINVAL);
+
+	return (hypervgfx_set_mode(sc, w, h));
 }
 
 static int
@@ -389,17 +440,31 @@ hypervgfx_test_sysctl(SYSCTL_HANDLER_ARGS)
 	volatile uint32_t *line;
 	uint32_t color;
 	struct hypervgfx_rect full;
-	int i, j, error;
+	uint32_t x, y;
+	int error;
 
 	if (sc == NULL || sc->fb_vbase == NULL)
 		return (ENODEV);
 
-	for (i = 0; i < (int)sc->fb_height; i++) {
+	/*
+	 * Four large quadrants: yellow / magenta / cyan / white, with a
+	 * 4-pixel black border.  Distinct even when the console scales.
+	 */
+	for (y = 0; y < sc->fb_height; y++) {
 		line = (volatile uint32_t *)((uintptr_t)sc->fb_vbase +
-		    (size_t)i * sc->fb_stride);
-		color = (i % 2) ? 0x00ff00ff : 0x0000ffff;
-		for (j = 0; j < (int)sc->fb_width; j++)
-			line[j] = color;
+		    (size_t)y * sc->fb_stride);
+		for (x = 0; x < sc->fb_width; x++) {
+			if (x < 4 || y < 4 || x >= sc->fb_width - 4 ||
+			    y >= sc->fb_height - 4)
+				color = 0x00000000;
+			else if (y < sc->fb_height / 2)
+				color = x < sc->fb_width / 2 ?
+				    0x00ffff00 : 0x00ff00ff; /* Y | M */
+			else
+				color = x < sc->fb_width / 2 ?
+				    0x0000ffff : 0x00ffffff; /* C | W */
+			line[x] = color;
+		}
 	}
 
 	/* Tell the host the whole screen has changed. */
@@ -421,6 +486,10 @@ SYSCTL_PROC(_hw_hypervgfx, OID_AUTO, test_pattern,
     CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     hypervgfx_test_sysctl, "A",
     "Fill the framebuffer with a test pattern");
+SYSCTL_PROC(_hw_hypervgfx, OID_AUTO, set_mode,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
+    hypervgfx_set_mode_sysctl, "A",
+    "Set display mode (WIDTHxHEIGHT, e.g. 1920x1080)");
 
 static int
 hypervgfx_refresh_hz_sysctl(SYSCTL_HANDLER_ARGS)

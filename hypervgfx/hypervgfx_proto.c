@@ -297,11 +297,22 @@ hypervgfx_get_supported_resolution(struct hypervgfx_softc *sc)
 		uint16_t w = msg->resolution_resp.supported_resolution[i].width;
 		uint16_t h = msg->resolution_resp.supported_resolution[i].height;
 
+		if (i < 64) {
+			sc->modes[i].w = w;
+			sc->modes[i].h = h;
+		}
 		if (w > sc->screen_width_max)
 			sc->screen_width_max = w;
 		if (h > sc->screen_height_max)
 			sc->screen_height_max = h;
 	}
+	sc->nmodes = min(msg->resolution_resp.resolution_count, 64u);
+	sc->is_standard = msg->resolution_resp.is_standard != 0;
+
+	for (i = 0; i < sc->nmodes; i++)
+		device_printf(sc->dev, "host mode %u: %ux%u%s\n", i,
+		    sc->modes[i].w, sc->modes[i].h,
+		    i == index ? " (default)" : "");
 
 	sc->preferred_width =
 	    msg->resolution_resp.supported_resolution[index].width;
@@ -317,6 +328,56 @@ hypervgfx_get_supported_resolution(struct hypervgfx_softc *sc)
 out:
 	free(msg, M_DEVBUF);
 	return (error);
+}
+
+/*
+ * Switch the display mode.  The mode must fit into the framebuffer
+ * window the hypervisor gave us; the host reacts to the SITUATION_UPDATE
+ * by reconfiguring the virtual monitor.
+ */
+int
+hypervgfx_set_mode(struct hypervgfx_softc *sc, uint32_t width,
+    uint32_t height)
+{
+	struct hypervgfx_rect full;
+	int i, error;
+
+	if (width == 0 || height == 0 || width > 4096 || height > 4096)
+		return (EINVAL);
+
+	/* The mode should be one the host advertised. */
+	for (i = 0; i < sc->nmodes; i++) {
+		if (sc->modes[i].w == width && sc->modes[i].h == height)
+			break;
+	}
+	if (i == sc->nmodes)
+		device_printf(sc->dev, "warning: %ux%u is not in the host "
+		    "mode list, trying anyway\n", width, height);
+
+	if ((size_t)width * height * 4 > sc->fb_size)
+		return (EFBIG);
+
+	sc->fb_width = width;
+	sc->fb_height = height;
+	sc->fb_stride = width * 4;
+
+	/* Keep the fbdev view of the buffer in sync. */
+	sc->fbi.fb_width = width;
+	sc->fbi.fb_height = height;
+	sc->fbi.fb_stride = sc->fb_stride;
+
+	error = hypervgfx_update_situation(sc, 1, sc->fb_bpp, width, height,
+	    sc->fb_stride);
+	if (error != 0)
+		return (error);
+
+	full.x1 = 0;
+	full.y1 = 0;
+	full.x2 = width;
+	full.y2 = height;
+
+	device_printf(sc->dev, "switched to %ux%u\n", width, height);
+	return (hypervgfx_update_dirt(sc, &full));
 }
 
 /*

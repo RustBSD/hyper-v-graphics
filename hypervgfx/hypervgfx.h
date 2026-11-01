@@ -261,6 +261,14 @@ struct hypervgfx_softc {
 	uint32_t preferred_height;
 	bool dirt_needed;
 
+	/* Modes reported by the host (from RESOLUTION_RESPONSE). */
+	struct {
+		uint16_t w;
+		uint16_t h;
+	} modes[64];
+	uint32_t nmodes;
+	bool is_standard;
+
 	/* Framebuffer. */
 	vm_paddr_t fb_pbase;
 	void *fb_vbase;
@@ -297,6 +305,7 @@ int	hypervgfx_update_vram_location(struct hypervgfx_softc *, uint64_t);
 int	hypervgfx_update_situation(struct hypervgfx_softc *, uint8_t, uint32_t,
 	    uint32_t, uint32_t, uint32_t);
 int	hypervgfx_get_supported_resolution(struct hypervgfx_softc *);
+int	hypervgfx_set_mode(struct hypervgfx_softc *, uint32_t, uint32_t);
 void	hypervgfx_hide_hw_ptr(struct hypervgfx_softc *);
 int	hypervgfx_update_dirt(struct hypervgfx_softc *, const struct
 	    hypervgfx_rect *);
