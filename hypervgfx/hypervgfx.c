@@ -35,6 +35,7 @@
 
 #include <sys/param.h>
 #include <sys/bus.h>
+#include <sys/callout.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/module.h>
@@ -68,6 +69,38 @@ static int hypervgfx_detach(device_t);
  * pointer so that the sysctl handlers can find it.
  */
 static struct hypervgfx_softc *hypervgfx_softc;
+
+/*
+ * Re-send a full-screen DIRT at a fixed rate so the host repaints the
+ * framebuffer.  This is a stopgap until the frontend tracks damage.
+ */
+static void
+hypervgfx_dirt_refresh(void *arg)
+{
+	struct hypervgfx_softc *sc = arg;
+	struct hypervgfx_rect full;
+
+	if (sc->dirt_needed) {
+		full.x1 = 0;
+		full.y1 = 0;
+		full.x2 = sc->fb_width;
+		full.y2 = sc->fb_height;
+		hypervgfx_update_dirt(sc, &full);
+	}
+
+	if (sc->refresh_hz > 0)
+		callout_reset(&sc->dirt_co, hz / sc->refresh_hz,
+		    hypervgfx_dirt_refresh, sc);
+}
+
+static void
+hypervgfx_dirt_start(struct hypervgfx_softc *sc)
+{
+
+	if (sc->refresh_hz > 0)
+		callout_reset(&sc->dirt_co, hz / sc->refresh_hz,
+		    hypervgfx_dirt_refresh, sc);
+}
 
 /*
  * Is this the synthetic video device?
@@ -213,6 +246,8 @@ hypervgfx_attach(device_t dev)
 	sc->dev = dev;
 	sc->chan = chan;
 	mtx_init(&sc->lock, "hypervgfx", "hypervgfx lock", MTX_DEF);
+	callout_init(&sc->dirt_co, 1);
+	sc->refresh_hz = 15;
 
 	sc->rxbuflen = HYPERVGFX_PACKET_SIZE;
 	sc->rxbuf = malloc(sc->rxbuflen, M_DEVBUF, M_WAITOK | M_ZERO);
@@ -278,10 +313,11 @@ hypervgfx_attach(device_t dev)
 
 	hypervgfx_hide_hw_ptr(sc);
 
+	hypervgfx_softc = sc;
+	hypervgfx_dirt_start(sc);
+
 	device_printf(dev, "attached: framebuffer %ux%u at 0x%016jx\n",
 	    sc->fb_width, sc->fb_height, (uintmax_t)sc->fb_pbase);
-
-	hypervgfx_softc = sc;
 
 	return (0);
 
@@ -306,6 +342,8 @@ hypervgfx_detach(device_t dev)
 	if (hypervgfx_softc == sc)
 		hypervgfx_softc = NULL;
 
+	callout_stop(&sc->dirt_co);
+	callout_drain(&sc->dirt_co);
 	vmbus_chan_close(sc->chan);
 	hypervgfx_fb_detach(sc);
 
@@ -383,6 +421,34 @@ SYSCTL_PROC(_hw_hypervgfx, OID_AUTO, test_pattern,
     CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     hypervgfx_test_sysctl, "A",
     "Fill the framebuffer with a test pattern");
+
+static int
+hypervgfx_refresh_hz_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct hypervgfx_softc *sc = hypervgfx_softc;
+	int val, error;
+
+	if (sc == NULL)
+		return (ENODEV);
+
+	val = sc->refresh_hz;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val < 0 || val > 60)
+		return (EINVAL);
+
+	callout_stop(&sc->dirt_co);
+	sc->refresh_hz = val;
+	hypervgfx_dirt_start(sc);
+
+	return (0);
+}
+
+SYSCTL_PROC(_hw_hypervgfx, OID_AUTO, refresh_hz,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
+    hypervgfx_refresh_hz_sysctl, "I",
+    "Full-screen DIRT refresh rate (0 disables)");
 
 static device_method_t hypervgfx_methods[] = {
 	DEVMETHOD(device_probe,		hypervgfx_probe),

@@ -281,6 +281,14 @@ struct hypervgfx_softc {
 	/* Buffer holding the last response from the host. */
 	uint8_t *respbuf;
 	uint64_t xactid;
+
+	/*
+	 * Damage refresh: until a real damage tracking frontend exists,
+	 * re-send a full-screen DIRT at a fixed rate so the host repaints
+	 * what X drew into the framebuffer.
+	 */
+	struct callout dirt_co;
+	uint32_t refresh_hz;
 };
 
 /* hypervgfx_proto.c */
