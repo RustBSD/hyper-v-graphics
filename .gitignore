@@ -1,0 +1,12 @@
+*.o
+*.ko
+*.ko.debug
+*.kld
+.depend.*
+machine
+x86
+i386
+opt_global.h
+bus_if.h
+device_if.h
+export_syms
