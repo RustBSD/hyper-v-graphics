@@ -100,6 +100,45 @@ hypervgfx_fb_attach(struct hypervgfx_softc *sc)
 		device_printf(sc->dev, "unable to map the framebuffer\n");
 		return (ENOMEM);
 	}
+	sc->fb_memattr = memattr;
+
+	/*
+	 * Register the fbdev frontend.  This creates /dev/fb0 and hands
+	 * the console over to the generic vt_fb backend, which draws into
+	 * the same framebuffer.
+	 */
+	sc->fbi.fb_type = FBTYPE_PCIMISC;
+	sc->fbi.fb_height = sc->fb_height;
+	sc->fbi.fb_width = sc->fb_width;
+	sc->fbi.fb_depth = sc->fb_bpp;
+	sc->fbi.fb_cmsize = 16;
+	sc->fbi.fb_size = sc->fb_size;
+	sc->fbi.fb_pbase = sc->fb_pbase;
+	sc->fbi.fb_vbase = (vm_offset_t)sc->fb_vbase;
+	sc->fbi.fb_name = "Hyper-V Synthetic Video";
+	sc->fbi.fb_flags = FB_FLAG_MEMATTR;
+	sc->fbi.fb_memattr = sc->fb_memattr;
+	sc->fbi.fb_stride = sc->fb_stride;
+	sc->fbi.fb_bpp = sc->fb_bpp;
+	sc->fbi.fb_video_dev = sc->dev;
+	/* 32-bit XRGB: the usual byte order B,G,R,X. */
+	sc->fbi.fb_rgboffs.red = 16;
+	sc->fbi.fb_rgboffs.green = 8;
+	sc->fbi.fb_rgboffs.blue = 0;
+
+	/* Standard VGA palette, stored as raw XRGB pixels. */
+	static const uint32_t cmap[16] = {
+	    0x00000000, 0x000000aa, 0x0000aa00, 0x0000aaaa,
+	    0x00aa0000, 0x00aa00aa, 0x00aa5500, 0x00aaaaaa,
+	    0x00555555, 0x005555ff, 0x0055ff55, 0x0055ffff,
+	    0x00ff5555, 0x00ff55ff, 0x00ffff55, 0x00ffffff,
+	};
+	memcpy(sc->fbi.fb_cmap, cmap, sizeof(cmap));
+
+	if (fbd_register(&sc->fbi) != 0)
+		device_printf(sc->dev, "fbd_register failed\n");
+	else
+		sc->fbi_registered = true;
 
 	return (0);
 }
@@ -107,6 +146,11 @@ hypervgfx_fb_attach(struct hypervgfx_softc *sc)
 void
 hypervgfx_fb_detach(struct hypervgfx_softc *sc)
 {
+
+	if (sc->fbi_registered) {
+		fbd_unregister(&sc->fbi);
+		sc->fbi_registered = false;
+	}
 
 	if (sc->fb_vbase != NULL) {
 		pmap_unmapdev(sc->fb_vbase, sc->fb_size);

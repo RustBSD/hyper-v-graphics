@@ -42,6 +42,7 @@
 
 #include <sys/param.h>
 #include <sys/bus.h>
+#include <sys/fbio.h>
 #include <sys/mutex.h>
 #include <sys/taskqueue.h>
 #include <sys/types.h>
@@ -268,6 +269,11 @@ struct hypervgfx_softc {
 	uint32_t fb_height;
 	uint32_t fb_stride;
 	uint32_t fb_bpp;
+	vm_memattr_t fb_memattr;
+
+	/* fbdev frontend (/dev/fb0). */
+	struct fb_info fbi;
+	bool fbi_registered;
 
 	/* Receive buffer and bookkeeping. */
 	uint8_t *rxbuf;
