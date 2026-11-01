@@ -10,3 +10,6 @@ opt_global.h
 bus_if.h
 device_if.h
 export_syms
+
+# drm-kmod build tree (fetched by drm/fetch.sh)
+.drm-kmod/
